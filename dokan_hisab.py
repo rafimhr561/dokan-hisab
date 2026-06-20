@@ -331,3 +331,328 @@ def dashboard_page():
         if st.button("আজকের বাকি দেখুন", key="btn_today_unpaid"):
             today_unpaid = [r for r in unpaid_all if r["transaction_date"] == date.today().isoformat()]
             if today_unpaid:
+if today_unpaid:
+                st.write("**আজকের বাকি লেনদেন:**")
+                for r in today_unpaid:
+                    st.write(f"- {r['customer_name'] or '----'} | {r['service_type_name']} | {fmt_tk(r['amount'])} | রেফ: {r['reference'] or '----'}")
+            else:
+                st.info("আজ কোনো বাকি লেনদেন নেই")
+                
+    st.divider()
+    # Monthly summary
+    st.subheader("চলতি মাসের সারসংক্ষেপ")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("মোট আয়", fmt_tk(monthly["total_income"]))
+    m2.metric("মোট লেনদেন", f"{monthly['count']}টি")
+    m3.metric("লাভ", fmt_tk(monthly["total_income"] - monthly["total_payment"]))
+    with m4:
+        st.metric("বাকি (ক্লিক করুন)", fmt_tk(monthly["unpaid_amount"]))
+        if st.button("মাসের বাকি দেখুন", key="btn_month_unpaid"):
+            if unpaid_all:
+                st.write("**মাসের বাকি লেনদেন:**")
+                for r in unpaid_all:
+                    st.write(f"- {fmt_dt(r['transaction_date'])} | {r['customer_name'] or '----'} | {r['service_type_name']} | রেফ: {r['reference'] or '----'} | {fmt_tk(r['amount'])}")
+            else:
+                st.info("এই মাসে কোনো বাকি লেনদেন নেই")
+
+# ═══════════════════════════════════════════════════════════════
+# ADD TRANSACTION
+# ═══════════════════════════════════════════════════════════════
+def add_transaction_page():
+    st.title("➕ নতুন লেনদেন যোগ করুন")
+    uid = st.session_state.user["id"]
+    services = get_service_types(uid)
+    with st.form("tx_form"):
+        tx_date = st.date_input("তারিখ", value=date.today())
+        name = st.text_input("গ্রাহকের নাম")
+        reference = st.text_input("রেফারেন্স")
+        service_options = [s["name"] for s in services]
+        service_options.append("+ অন্যান্য (ম্যানুয়ালি লিখুন)")
+        selected = st.selectbox("সেবা ধরন", service_options)
+        if selected == "+ অন্যান্য (ম্যানuয়ালি লিখুন)":
+            service_name = st.text_input("সেবার নাম লিখুন")
+            payment = st.number_input("খরচ/পেমেন্ট", min_value=0, value=0)
+        else:
+            service_name = selected
+            default_pay = next((s["default_payment"] for s in services if s["name"] == selected), 0)
+            payment = st.number_input("খরচ/পেমেন্ট", min_value=0, value=default_pay)
+        amount = st.number_input("টাকার পরিমাণ", min_value=0, value=0)
+        status = st.selectbox("স্ট্যাটাস", [("R", "পেইড"), ("P", "বাকি"), ("A", "অগ্রিম")], format_func=lambda x: x[1])
+        notes = st.text_area("নোট (ঐচ্ছিক)")
+        submitted = st.form_submit_button("💾 সংরক্ষণ করুন", use_container_width=True)
+        if submitted:
+            if not service_name:
+                st.error("সেবার নাম দিন")
+            else:
+                sid = next((s["id"] for s in services if s["name"] == selected), None)
+                create_transaction(uid, {
+                    "transaction_date": tx_date.isoformat(),
+                    "customer_name": name,
+                    "service_type_id": sid,
+                    "service_type_name": service_name,
+                    "amount": amount,
+                    "payment": payment,
+                    "status": status[0],
+                    "reference": reference,
+                    "notes": notes,
+                })
+                st.success("লেনদেন সংরক্ষিত হয়েছে!")
+                st.balloons()
+    if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
+        st.session_state.page = "dashboard"
+        st.rerun()
+
+# ═══════════════════════════════════════════════════════════════
+# TRANSACTION HISTORY
+# ═══════════════════════════════════════════════════════════════
+def history_page():
+    st.title("📋 লেনদেনের তালিকা")
+    uid = st.session_state.user["id"]
+    services = get_service_types(uid)
+    with st.expander("🔍 ফিল্টার", expanded=False):
+        f1, f2, f3, f4 = st.columns(4)
+        from_d = f1.date_input("শুরুর তারিখ", value=None)
+        to_d = f2.date_input("শেষ তারিখ", value=None)
+        svc = f3.selectbox("সেবা ধরন", ["সব"] + [s["name"] for s in services])
+        sts = f4.selectbox("স্ট্যাটাস", ["সব", "অগ্রিম", "বাকি", "পেইড"])
+        search = st.text_input("নাম দিয়ে খুঁজুন")
+    rows = get_transactions(
+        uid,
+        from_date=from_d.isoformat() if from_d else None,
+        to_date=to_d.isoformat() if to_d else None,
+        service_type_id=next((s["id"] for s in services if s["name"] == svc), None) if svc != "সব" else None,
+        status={"অগ্রিম": "A", "বাকি": "P", "পেইড": "R"}.get(sts),
+        search_name=search or None,
+    )
+    total_income = sum(r["amount"] or 0 for r in rows)
+    st.info(f"মোট আয়: {fmt_tk(total_income)} | লেনদেন: {len(rows)}টি")
+    if not rows:
+        st.warning("কোনো লেনদেন পাওয়া যায়নি")
+    else:
+        for r in rows:
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 2, 1])
+                c1.write(f"**{fmt_dt(r['transaction_date'])}** — {r['customer_name'] or '----'}")
+                c1.caption(f"কাজ: {r['service_type_name']} | রেফ: {r['reference'] or '----'}")
+                c2.write(f"টাকা: **{fmt_tk(r['amount'])}**")
+                c2.write(f"খরচ: {fmt_tk(r['payment'])}")
+                status_color = {"A": "blue", "P": "red", "R": "green"}.get(r["status"], "gray")
+                c3.markdown(f":{status_color}[**{STATUS_LABELS.get(r['status'], r['status'])}**]")
+                with st.popover("⚙️ কার্যক্রম"):
+                    if st.button("✏️ সম্পাদনা", key=f"edit_{r['id']}"):
+                        st.session_state.edit_tx = r
+                        st.session_state.page = "edit"
+                        st.rerun()
+                    if st.button("🗑️ মুছুন", key=f"del_{r['id']}"):
+                        delete_transaction(r["id"])
+                        st.success("মুছে ফেলা হয়েছে")
+                        st.rerun()
+    if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
+        st.session_state.page = "dashboard"
+        st.rerun()
+
+# ── EDIT TRANSACTION ───────────────────────────────────────────
+def edit_page():
+    st.title("✏️ লেনদেন সম্পাদনা")
+    uid = st.session_state.user["id"]
+    tx = st.session_state.get("edit_tx")
+    if not tx:
+        st.error("কোনো লেনদেন নির্বাচন করা হয়নি")
+        return
+    services = get_service_types(uid)
+    with st.form("edit_form"):
+        tx_date = st.date_input("তারিখ", value=datetime.strptime(tx["transaction_date"], "%Y-%m-%d").date())
+        name = st.text_input("গ্রাহকের নাম", value=tx["customer_name"] or "")
+        reference = st.text_input("রেফারেন্স", value=tx["reference"] or "")
+        svc_name = st.text_input("সেবার নাম", value=tx["service_type_name"])
+        amount = st.number_input("টাকার পরিমাণ", min_value=0, value=int(tx["amount"]))
+        payment = st.number_input("খরচ/পেমেন্ট", min_value=0, value=int(tx["payment"]))
+        status = st.selectbox(
+            "স্ট্যাটাস",
+            [("R", "পেইড"), ("P", "বাকি"), ("A", "অগ্রিম")],
+            index={"R": 0, "P": 1, "A": 2}.get(tx["status"], 0),
+            format_func=lambda x: x[1],
+        )
+        notes = st.text_area("নোট", value=tx["notes"] or "")
+        if st.form_submit_button("💾 হালনাগাদ করুন", use_container_width=True):
+            update_transaction(tx["id"], {
+                "transaction_date": tx_date.isoformat(),
+                "customer_name": name,
+                "service_type_name": svc_name,
+                "amount": amount,
+                "payment": payment,
+                "status": status[0],
+                "reference": reference,
+                "notes": notes,
+            })
+            st.success("হালনাগাদ হয়েছে!")
+            st.session_state.page = "history"
+            st.rerun()
+    if st.button("❌ বাতিল", use_container_width=True):
+        st.session_state.page = "history"
+        st.rerun()
+
+# ═══════════════════════════════════════════════════════════════
+# SERVICE TYPES
+# ═══════════════════════════════════════════════════════════════
+def service_types_page():
+    st.title("🔧 সেবা ধরন")
+    uid = st.session_state.user["id"]
+    services = get_service_types(uid)
+    st.subheader("নতুন সেবা ধরন যোগ করুন")
+    with st.form("svc_form"):
+        n = st.text_input("সেবার নাম")
+        p = st.number_input("ডিফল্ট পেমেন্ট", min_value=0, value=0)
+        if st.form_submit_button("➕ যোগ করুন", use_container_width=True):
+            if n:
+                create_service_type(uid, n, int(p))
+                st.success("যোগ হয়েছে!")
+                st.rerun()
+            else:
+                st.error("নাম দিন")
+                
+    st.subheader("বিদ্যমান সেবা ধরন")
+    if not services:
+        st.info("কোনো সেবা ধরন নেই")
+    else:
+        for s in services:
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 2, 1])
+                c1.write(f"**{s['name']}**")
+                c2.write(f"ডিফল্ট পেমেন্ট: {fmt_tk(s['default_payment'])}")
+                with c3:
+                    with st.popover("⚙️"):
+                        new_name = st.text_input("নাম", value=s["name"], key=f"sn_{s['id']}")
+                        new_pay = st.number_input("পেমেন্ট", min_value=0, value=s["default_payment"], key=f"sp_{s['id']}")
+                        if st.button("💾 সংরক্ষণ", key=f"ss_{s['id']}"):
+                            update_service_type(s["id"], new_name, int(new_pay))
+                            st.success("হালনাগাদ হয়েছে")
+                            st.rerun()
+                        if st.button("🗑️ মুছুন", key=f"sd_{s['id']}"):
+                            delete_service_type(s["id"])
+                            st.success("মুছে ফেলা হয়েছে")
+                            st.rerun()
+                            
+    if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
+        st.session_state.page = "dashboard"
+        st.rerun()
+
+# ═══════════════════════════════════════════════════════════════
+# REPORTS
+# ═══════════════════════════════════════════════════════════════
+def reports_page():
+    st.title("📈 রিপোর্ট ও সারসংক্ষেপ")
+    uid = st.session_state.user["id"]
+    now = datetime.now()
+    year = st.selectbox("বছর", list(range(2024, 2028)), index=now.year - 2024)
+    month = st.selectbox("মাস", list(range(1, 13)), index=now.month - 1)
+    
+    from_date = f"{year:04d}-{month:02d}-01"
+    last_day = (datetime(year, month % 12 + 1, 1) - __import__("datetime").timedelta(days=1)).day
+    to_date = f"{year:04d}-{month:02d}-{last_day:02d}"
+    
+    rows = get_transactions(uid, from_date=from_date, to_date=to_date)
+    total_income = sum(r["amount"] or 0 for r in rows)
+    total_payment = sum(r["payment"] or 0 for r in rows)
+    
+    st.divider()
+    r1, r2, r3 = st.columns(3)
+    r1.metric("মোট আয়", fmt_tk(total_income))
+    r2.metric("মোট খরচ", fmt_tk(total_payment))
+    r3.metric("লাভ", fmt_tk(total_income - total_payment))
+    st.divider()
+    
+    st.subheader("কাজ অনুযায়ী বিভাজন")
+    svc_map = defaultdict(lambda: {"count": 0, "income": 0, "payment": 0})
+    for r in rows:
+        svc_map[r["service_type_name"]]["count"] += 1
+        svc_map[r["service_type_name"]]["income"] += r["amount"] or 0
+        svc_map[r["service_type_name"]]["payment"] += r["payment"] or 0
+        
+    if svc_map:
+        data = []
+        for name, v in svc_map.items():
+            data.append({
+                "কাজ": name,
+                "সংখ্যা": v["count"],
+                "মোট আয়": fmt_tk(v["income"]),
+                "মোট খরচ": fmt_tk(v["payment"]),
+                "লাভ": fmt_tk(v["income"] - v["payment"]),
+            })
+        st.dataframe(data, use_container_width=True, hide_index=True)
+    else:
+        st.info("কোনো তথ্য নেই")
+        
+    st.divider()
+    st.subheader("তারিখ অনুযায়ী বিভাজন")
+    day_map = defaultdict(lambda: {"count": 0, "income": 0, "payment": 0})
+    for r in rows:
+        day_map[r["transaction_date"]]["count"] += 1
+        day_map[r["transaction_date"]]["income"] += r["amount"] or 0
+        day_map[r["transaction_date"]]["payment"] += r["payment"] or 0
+        
+    if day_map:
+        data2 = []
+        for d, v in sorted(day_map.items(), reverse=True):
+            data2.append({
+                "তারিখ": fmt_dt(d),
+                "লেনদেন": v["count"],
+                "মোট আয়": fmt_tk(v["income"]),
+                "মোট খরচ": fmt_tk(v["payment"]),
+                "লাভ": fmt_tk(v["income"] - v["payment"]),
+            })
+        st.dataframe(data2, use_container_width=True, hide_index=True)
+    else:
+        st.info("কোনো তথ্য নেই")
+        
+    if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
+        st.session_state.page = "dashboard"
+        st.rerun()
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN NAV
+# ═══════════════════════════════════════════════════════════════
+def main():
+    if not st.session_state.user:
+        auth_page()
+        return
+        
+    with st.sidebar:
+        st.title("📋 দোকানের হিসাব")
+        st.caption(f"{st.session_state.user.get('shop_name') or 'দোকান'}")
+        st.divider()
+        pages = {
+            "dashboard": "📊 ড্যাশবোর্ড",
+            "add": "➕ লেনদেন যোগ",
+            "history": "📋 লেনদেন তালিকা",
+            "services": "🔧 সেবা ধরন",
+            "reports": "📈 রিপোর্ট",
+        }
+        for key, label in pages.items():
+            if st.button(label, use_container_width=True, key=f"nav_{key}"):
+                st.session_state.page = key
+                st.rerun()
+        st.divider()
+        if st.button("🚪 লগআউট", use_container_width=True):
+            st.session_state.user = None
+            st.session_state.page = "dashboard"
+            st.rerun()
+            
+    page = st.session_state.page
+    if page == "dashboard":
+        dashboard_page()
+    elif page == "add":
+        add_transaction_page()
+    elif page == "history":
+        history_page()
+    elif page == "edit":
+        edit_page()
+    elif page == "services":
+        service_types_page()
+    elif page == "reports":
+        reports_page()
+    else:
+        dashboard_page()
+
+if __name__ == "__main__":
+    main()
