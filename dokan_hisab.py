@@ -331,7 +331,6 @@ def dashboard_page():
         if st.button("আজকের বাকি দেখুন", key="btn_today_unpaid"):
             today_unpaid = [r for r in unpaid_all if r["transaction_date"] == date.today().isoformat()]
             if today_unpaid:
-if today_unpaid:
                 st.write("**আজকের বাকি লেনদেন:**")
                 for r in today_unpaid:
                     st.write(f"- {r['customer_name'] or '----'} | {r['service_type_name']} | {fmt_tk(r['amount'])} | রেফ: {r['reference'] or '----'}")
@@ -369,7 +368,7 @@ def add_transaction_page():
         service_options = [s["name"] for s in services]
         service_options.append("+ অন্যান্য (ম্যানুয়ালি লিখুন)")
         selected = st.selectbox("সেবা ধরন", service_options)
-        if selected == "+ অন্যান্য (ম্যানuয়ালি লিখুন)":
+        if selected == "+ অন্যান্য (ম্যানুয়ালি লিখুন)":
             service_name = st.text_input("সেবার নাম লিখুন")
             payment = st.number_input("খরচ/পেমেন্ট", min_value=0, value=0)
         else:
