@@ -1,1 +1,2 @@
-streamlit>=1.30.0
+streamlit>=1.28
+st-gsheets-connection
