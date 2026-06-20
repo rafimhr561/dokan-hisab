@@ -60,21 +60,13 @@ def init_db():
             service_type_name TEXT NOT NULL,
             amount INTEGER NOT NULL DEFAULT 0,
             payment INTEGER NOT NULL DEFAULT 0,
-            received_amount INTEGER NOT NULL DEFAULT 0, -- নতুন কলাম: কাস্টমার কত দিল
+            received_amount INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'R',
             reference TEXT,
             notes TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
-    # ডাটাবেজ আগে তৈরি করা থাকলে received_amount কলামটি যোগ করার জন্য সেফটি চেক
-    try:
-        c.execute("ALTER TABLE transactions ADD COLUMN received_amount INTEGER NOT NULL DEFAULT 0")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass # কলাম ইতিমধ্যে থাকলে ইগনোর করবে
-        
     conn.commit()
     conn.close()
 
@@ -159,7 +151,7 @@ def create_transaction(user_id: int, tx: dict):
     """, (
         user_id,
         tx["transaction_date"],
-        tx.get("customer_name") or None,
+        tx.get("customer_name") or "----",
         tx.get("service_type_id") or None,
         tx["service_type_name"],
         int(tx["amount"]),
@@ -214,7 +206,7 @@ def update_transaction(tid: int, tx: dict):
         WHERE id=?
     """, (
         tx["transaction_date"],
-        tx.get("customer_name") or None,
+        tx.get("customer_name") or "----",
         tx["service_type_name"],
         int(tx["amount"]),
         int(tx["payment"]),
@@ -236,24 +228,22 @@ def delete_transaction(tid: int):
 
 # ── Dashboard helpers ──────────────────────────────────────────
 def calculate_summary(rows: list[dict]) -> dict:
-    """সকল রোর ওপর ভিত্তি করে নিখুঁত হিসাব বের করার সাধারণ ফাংশন"""
-    total_bill = sum(r["amount"] or 0 for r in rows)          # মোট বিক্রয়/বিল
-    total_cost = sum(r["payment"] or 0 for r in rows)         # মোট নিজের খরচ
-    total_received = sum(r["received_amount"] or 0 for r in rows) # ক্যাশ আদায় হয়েছে যা
+    """নতুন রিকোয়ারমেন্ট অনুযায়ী কাস্টমাইজড লাভ-ক্ষতি ও বিক্রির হিসাব"""
+    total_income = sum(r["amount"] or 0 for r in rows)   # মোট টাকা (আয়)
+    total_payment = sum(r["payment"] or 0 for r in rows) # মোট পেমেন্ট (খরচ)
     
-    # প্রকৃত লাভ = গ্রাহকের মোট বিল - আপনার নিজের খরচ
-    net_profit = total_bill - total_cost
+    # লাভ = মোট টাকা (আয়) - মোট পেমেন্ট (খরচ)
+    net_profit = total_income - total_payment
     
-    # মোট বাকি = মোট বিলের যে অংশটুকু এখনো পরিশোধ হয়নি
+    # বাকি হিসাব (স্ট্যাটাস যদি 'P' বা বাকি হয়, অথবা বিল যদি আদায়ের চেয়ে বেশি হয়)
     unpaid = sum((r["amount"] - r["received_amount"]) for r in rows if r["amount"] > r["received_amount"])
     
     return {
-        "total_income": total_bill,
-        "total_payment": total_cost,
-        "total_received": total_received,
+        "total_income": total_income,
+        "total_payment": total_payment,
         "net_profit": net_profit,
         "unpaid_amount": unpaid,
-        "count": len(rows),
+        "count": len(rows), # মোট লেনদেনের সংখ্যা
     }
 
 def get_today_summary(user_id: int) -> dict:
@@ -340,9 +330,9 @@ def dashboard_page():
     # Today's summary
     st.subheader("আজকের সারসংক্ষেপ")
     t1, t2, t3, t4 = st.columns(4)
-    t1.metric("মোট বিক্রি (বিল)", fmt_tk(today["total_income"]))
-    t2.metric("নগদ আদায়", fmt_tk(today["total_received"]))
-    t3.metric("প্রকৃত লাভ", fmt_tk(today["net_profit"]))
+    t1.metric("মোট টাকা (আয়)", fmt_tk(today["total_income"]))
+    t2.metric("মোট লেনদেন", f"{today['count']} টি")
+    t3.metric("লাভ (টাকা - পেমেন্ট)", fmt_tk(today["net_profit"]))
     with t4:
         st.metric("বাকি (ক্লিক করুন)", fmt_tk(today["unpaid_amount"]))
         if st.button("আজকের বাকি দেখুন", key="btn_today_unpaid"):
@@ -360,20 +350,20 @@ def dashboard_page():
     # Monthly summary
     st.subheader("চলতি মাসের সারসংক্ষেপ")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("মোট বিক্রি (বিল)", fmt_tk(monthly["total_income"]))
-    m2.metric("নগদ আদায়", fmt_tk(monthly["total_received"]))
-    m3.metric("প্রকৃত লাভ", fmt_tk(monthly["net_profit"]))
+    m1.metric("মোট টাকা (আয়)", fmt_tk(monthly["total_income"]))
+    m2.metric("মোট লেনদেন", f"{monthly['count']} টি")
+    m3.metric("লাভ (টাকা - পেমেন্ট)", fmt_tk(monthly["net_profit"]))
     with m4:
         st.metric("বাকি (ক্লিক করুন)", fmt_tk(monthly["unpaid_amount"]))
         if st.button("মাসের বাকি দেখুন", key="btn_month_unpaid"):
             monthly_unpaid = [r for r in unpaid_all if r["amount"] > r["received_amount"]]
             if monthly_unpaid:
-                st.write("**চলতি বকেয়া লেনদেনসমূহ:**")
+                st.write("**চলতি বকেয়া লেনদেনসমূহ:**")
                 for r in monthly_unpaid:
                     due = r['amount'] - r['received_amount']
                     st.write(f"- {fmt_dt(r['transaction_date'])} | {r['customer_name'] or '----'} | বাকি: {fmt_tk(due)} (মোট: {fmt_tk(r['amount'])})")
             else:
-                st.info("কোনো বকেয়া লেনদেন নেই")
+                st.info("কোনো বকেয়া লেনদেন নেই")
 
 # ═══════════════════════════════════════════════════════════════
 # ADD TRANSACTION
@@ -384,8 +374,10 @@ def add_transaction_page():
     services = get_service_types(uid)
     with st.form("tx_form"):
         tx_date = st.date_input("তারিখ", value=date.today())
-        name = st.text_input("গ্রাহকের নাম")
-        reference = st.text_input("রেফারেন্স")
+        name = st.text_input("গ্রাহকের নাম (ঐচ্ছিক)")
+        
+        # রেফারেন্স এখন সিলেক্ট বক্স (A, R, P)
+        reference = st.selectbox("রেফারেন্স", ["A", "R", "P"])
         
         service_options = [s["name"] for s in services]
         service_options.append("+ অন্যান্য (ম্যানুয়ালি লিখুন)")
@@ -393,14 +385,13 @@ def add_transaction_page():
         
         if selected == "+ অন্যান্য (ম্যানুয়ালি লিখুন)":
             service_name = st.text_input("সেবার নাম লিখুন")
-            payment = st.number_input("আপনার নিজের খরচ/ক্রয়মূল্য", min_value=0, value=0)
+            payment = st.number_input("পেমেন্ট (খরচ)", min_value=0, value=0)
         else:
             service_name = selected
             default_pay = next((s["default_payment"] for s in services if s["name"] == selected), 0)
-            payment = st.number_input("আপনার নিজের খরচ/ক্রয়মূল্য", min_value=0, value=default_pay)
+            payment = st.number_input("পেমেন্ট (খরচ)", min_value=0, value=default_pay)
             
-        amount = st.number_input("গ্রাহকের মোট বিল (টাকার পরিমাণ)", min_value=0, value=0)
-        received = st.number_input("গ্রাহক থেকে নগদ আদায়", min_value=0, value=0)
+        amount = st.number_input("টাকা (আয়)", min_value=0, value=0)
         
         status = st.selectbox("স্ট্যাটাস", [("R", "পেইড"), ("P", "বাকি"), ("A", "অগ্রিম")], format_func=lambda x: x[1])
         notes = st.text_area("নোট (ঐচ্ছিক)")
@@ -409,18 +400,24 @@ def add_transaction_page():
         if submitted:
             if not service_name:
                 st.error("সেবার নাম দিন")
-            elif received > amount and status[0] != "A":
-                st.warning("বিল থেকে আদায় বেশি হলে স্ট্যাটাস 'অগ্রিম' হওয়া উচিত।")
             else:
+                # নাম ফাঁকা থাকলে ---- দিয়ে সেভ হবে
+                final_name = name.strip() if name.strip() else "----"
+                
+                # বাকির হিসাব ঠিক রাখার জন্য লজিক সিঙ্ক করা হলো
+                received_calc = amount if status[0] == "R" else 0
+                if status[0] == "A":
+                    received_calc = amount
+                
                 sid = next((s["id"] for s in services if s["name"] == selected), None)
                 create_transaction(uid, {
                     "transaction_date": tx_date.isoformat(),
-                    "customer_name": name,
+                    "customer_name": final_name,
                     "service_type_id": sid,
                     "service_type_name": service_name,
                     "amount": amount,
                     "payment": payment,
-                    "received_amount": received,
+                    "received_amount": received_calc,
                     "status": status[0],
                     "reference": reference,
                     "notes": notes,
@@ -456,8 +453,8 @@ def history_page():
     )
     
     total_bill_sum = sum(r["amount"] or 0 for r in rows)
-    total_rec_sum = sum(r["received_amount"] or 0 for r in rows)
-    st.info(f"মোট বিল: {fmt_tk(total_bill_sum)} | মোট নগদ আদায়: {fmt_tk(total_rec_sum)} | লেনদেন: {len(rows)}টি")
+    total_pay_sum = sum(r["payment"] or 0 for r in rows)
+    st.info(f"মোট টাকা (আয়): {fmt_tk(total_bill_sum)} | মোট পেমেন্ট (খরচ): {fmt_tk(total_pay_sum)} | লেনদেন: {len(rows)}টি")
     
     if not rows:
         st.warning("কোনো লেনদেন পাওয়া যায়নি")
@@ -468,8 +465,8 @@ def history_page():
                 c1.write(f"**{fmt_dt(r['transaction_date'])}** — {r['customer_name'] or '----'}")
                 c1.caption(f"কাজ: {r['service_type_name']} | রেফ: {r['reference'] or '----'}")
                 
-                c2.write(f"মোট বিল: **{fmt_tk(r['amount'])}**")
-                c2.write(f"নগদ আদায়: {fmt_tk(r['received_amount'])} | খরচ: {fmt_tk(r['payment'])}")
+                c2.write(f"টাকা (আয়): **{fmt_tk(r['amount'])}**")
+                c2.write(f"পেমেন্ট (খরচ): {fmt_tk(r['payment'])}")
                 
                 status_color = {"A": "blue", "P": "red", "R": "green"}.get(r["status"], "gray")
                 c3.markdown(f":{status_color}[**{STATUS_LABELS.get(r['status'], r['status'])}**]")
@@ -499,12 +496,15 @@ def edit_page():
         
     with st.form("edit_form"):
         tx_date = st.date_input("তারিখ", value=datetime.strptime(tx["transaction_date"], "%Y-%m-%d").date())
-        name = st.text_input("গ্রাহকের নাম", value=tx["customer_name"] or "")
-        reference = st.text_input("রেফারেন্স", value=tx["reference"] or "")
+        name = st.text_input("গ্রাহকের নাম (ঐচ্ছিক)", value=tx["customer_name"] if tx["customer_name"] != "----" else "")
+        
+        # এডিটেও রেফারেন্স সিলেক্ট বক্স
+        ref_idx = ["A", "R", "P"].index(tx["reference"]) if tx["reference"] in ["A", "R", "P"] else 0
+        reference = st.selectbox("রেফারেন্স", ["A", "R", "P"], index=ref_idx)
+        
         svc_name = st.text_input("সেবার নাম", value=tx["service_type_name"])
-        amount = st.number_input("গ্রাহকের মোট বিল", min_value=0, value=int(tx["amount"]))
-        payment = st.number_input("আপনার নিজের খরচ", min_value=0, value=int(tx["payment"]))
-        received = st.number_input("নগদ আদায়", min_value=0, value=int(tx.get("received_amount", 0)))
+        amount = st.number_input("টাকা (আয়)", min_value=0, value=int(tx["amount"]))
+        payment = st.number_input("পেমেন্ট (খরচ)", min_value=0, value=int(tx["payment"]))
         
         status = st.selectbox(
             "স্ট্যাটাস",
@@ -515,13 +515,18 @@ def edit_page():
         notes = st.text_area("নোট", value=tx["notes"] or "")
         
         if st.form_submit_button("💾 হালনাগাদ করুন", use_container_width=True):
+            final_name = name.strip() if name.strip() else "----"
+            received_calc = amount if status[0] == "R" else 0
+            if status[0] == "A":
+                received_calc = amount
+                
             update_transaction(tx["id"], {
                 "transaction_date": tx_date.isoformat(),
-                "customer_name": name,
+                "customer_name": final_name,
                 "service_type_name": svc_name,
                 "amount": amount,
                 "payment": payment,
-                "received_amount": received,
+                "received_amount": received_calc,
                 "status": status[0],
                 "reference": reference,
                 "notes": notes,
@@ -534,9 +539,7 @@ def edit_page():
         st.session_state.page = "history"
         st.rerun()
 
-# ═══════════════════════════════════════════════════════════════
-# SERVICE TYPES
-# ═══════════════════════════════════════════════════════════════
+# ── SERVICE TYPES ──────────────────────────────────────────────
 def service_types_page():
     st.title("🔧 সেবা ধরন")
     uid = st.session_state.user["id"]
@@ -551,7 +554,7 @@ def service_types_page():
                 st.success("যোগ হয়েছে!")
                 st.rerun()
             else:
-                st.error("নাম দিন")
+                st.error("নাম edin")
                 
     st.subheader("বিদ্যমান সেবা ধরন")
     if not services:
@@ -579,9 +582,7 @@ def service_types_page():
         st.session_state.page = "dashboard"
         st.rerun()
 
-# ═══════════════════════════════════════════════════════════════
-# REPORTS
-# ═══════════════════════════════════════════════════════════════
+# ── REPORTS ───────────────────────────────────────────────────
 def reports_page():
     st.title("📈 রিপোর্ট ও সারসংক্ষেপ")
     uid = st.session_state.user["id"]
@@ -598,19 +599,18 @@ def reports_page():
     
     st.divider()
     r1, r2, r3, r4 = st.columns(4)
-    r1.metric("মোট বিল (বিক্রি)", fmt_tk(summary["total_income"]))
-    r2.metric("নগদ আদায়", fmt_tk(summary["total_received"]))
-    r3.metric("মোট খরচ", fmt_tk(summary["total_payment"]))
-    r4.metric("প্রকৃত লাভ", fmt_tk(summary["net_profit"]))
+    r1.metric("মোট টাকা (আয়)", fmt_tk(summary["total_income"]))
+    r2.metric("মোট পেমেন্ট (খরচ)", fmt_tk(summary["total_payment"]))
+    r3.metric("লাভ (টাকা - পেমেন্ট)", fmt_tk(summary["net_profit"]))
+    r4.metric("বাকি", fmt_tk(summary["unpaid_amount"]))
     st.divider()
     
     st.subheader("কাজ অনুযায়ী বিভাজন")
-    svc_map = defaultdict(lambda: {"count": 0, "income": 0, "payment": 0, "received": 0})
+    svc_map = defaultdict(lambda: {"count": 0, "income": 0, "payment": 0})
     for r in rows:
         svc_map[r["service_type_name"]]["count"] += 1
         svc_map[r["service_type_name"]]["income"] += r["amount"] or 0
         svc_map[r["service_type_name"]]["payment"] += r["payment"] or 0
-        svc_map[r["service_type_name"]]["received"] += r["received_amount"] or 0
         
     if svc_map:
         data = []
@@ -618,10 +618,9 @@ def reports_page():
             data.append({
                 "কাজ": name,
                 "সংখ্যা": v["count"],
-                "মোট বিল": fmt_tk(v["income"]),
-                "নগদ আদায়": fmt_tk(v["received"]),
-                "মোট খরচ": fmt_tk(v["payment"]),
-                "প্রকৃত লাভ": fmt_tk(v["income"] - v["payment"]),
+                "মোট টাকা (আয়)": fmt_tk(v["income"]),
+                "মোট পেমেন্ট (খরচ)": fmt_tk(v["payment"]),
+                "লাভ": fmt_tk(v["income"] - v["payment"]),
             })
         st.dataframe(data, use_container_width=True, hide_index=True)
     else:
@@ -629,12 +628,11 @@ def reports_page():
         
     st.divider()
     st.subheader("তারিখ অনুযায়ী বিভাজন")
-    day_map = defaultdict(lambda: {"count": 0, "income": 0, "payment": 0, "received": 0})
+    day_map = defaultdict(lambda: {"count": 0, "income": 0, "payment": 0})
     for r in rows:
         day_map[r["transaction_date"]]["count"] += 1
         day_map[r["transaction_date"]]["income"] += r["amount"] or 0
         day_map[r["transaction_date"]]["payment"] += r["payment"] or 0
-        day_map[r["transaction_date"]]["received"] += r["received_amount"] or 0
         
     if day_map:
         data2 = []
@@ -642,10 +640,9 @@ def reports_page():
             data2.append({
                 "তারিখ": fmt_dt(d),
                 "লেনদেন": v["count"],
-                "মোট বিল": fmt_tk(v["income"]),
-                "নগদ আদায়": fmt_tk(v["received"]),
-                "মোট খরচ": fmt_tk(v["payment"]),
-                "প্রকৃত লাভ": fmt_tk(v["income"] - v["payment"]),
+                "মোট টাকা (আয়)": fmt_tk(v["income"]),
+                "মোট পেমেন্ট (খরচ)": fmt_tk(v["payment"]),
+                "লাভ": fmt_tk(v["income"] - v["payment"]),
             })
         st.dataframe(data2, use_container_width=True, hide_index=True)
     else:
@@ -655,16 +652,14 @@ def reports_page():
         st.session_state.page = "dashboard"
         st.rerun()
 
-# ═══════════════════════════════════════════════════════════════
-# MAIN NAV
-# ═══════════════════════════════════════════════════════════════
+# ── MAIN NAV ───────────────────────────────────────────────────
 def main():
     if not st.session_state.user:
         auth_page()
         return
         
     with st.sidebar:
-        st.title("📋 দোকানের হিসাব")
+        st.title("📋  দোকানের হিসাব")
         st.caption(f"{st.session_state.user.get('shop_name') or 'দোকান'}")
         st.divider()
         pages = {
