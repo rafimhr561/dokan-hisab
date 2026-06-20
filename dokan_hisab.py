@@ -561,7 +561,7 @@ def reports_page():
     r3.metric("লাভ", fmt_tk(total_income - total_payment))
     st.divider()
     
-    st.subheader("কাজ অনুযায়ী বিভাজন")
+    st.subheader("কাজ অনুযায়ী বিভাজন")
     svc_map = defaultdict(lambda: {"count": 0, "income": 0, "payment": 0})
     for r in rows:
         svc_map[r["service_type_name"]]["count"] += 1
@@ -583,7 +583,7 @@ def reports_page():
         st.info("কোনো তথ্য নেই")
         
     st.divider()
-    st.subheader("তারিখ অনুযায়ী বিভাজন")
+    st.subheader("তারিখ অনুযায়ী বিভাজন")
     day_map = defaultdict(lambda: {"count": 0, "income": 0, "payment": 0})
     for r in rows:
         day_map[r["transaction_date"]]["count"] += 1
@@ -602,7 +602,7 @@ def reports_page():
             })
         st.dataframe(data2, use_container_width=True, hide_index=True)
     else:
-        st.info("কোনো তথ্য নেই")
+        st.info("কোনo তথ্য নেই")
         
     if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
         st.session_state.page = "dashboard"
