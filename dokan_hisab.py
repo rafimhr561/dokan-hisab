@@ -67,6 +67,29 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    
+    # 🌟 স্পেশাল রিকভারি লজিক: আপনার পুরনো আইডির পাসওয়ার্ডটি নতুন হ্যাশ দিয়ে আপডেট করা হচ্ছে
+    try:
+        target_user = "rafimhr561@gmail.com"
+        target_hash = hashlib.sha256("r@fi5596".encode()).hexdigest()
+        
+        # ইউজার অলরেডি থাকলে তার পাসওয়ার্ড হ্যাশ নতুন সিস্টেমে জোরপূর্বক আপডেট করা হবে
+        c.execute("SELECT id FROM users WHERE LOWER(username)=LOWER(?)", (target_user,))
+        user_row = c.fetchone()
+        if user_row:
+            c.execute(
+                "UPDATE users SET password_hash=? WHERE id=?",
+                (target_hash, user_row["id"])
+            )
+        else:
+            # যদি কোনো কারণে ডিলিট হয়ে থাকে তবে নতুন করে তৈরি হবে
+            c.execute(
+                "INSERT INTO users (username, password_hash, shop_name, owner_name) VALUES (?, ?, 'আমার দোকান', 'রাফি')",
+                (target_user, target_hash)
+            )
+    except Exception as e:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -79,7 +102,6 @@ def hash_pwd(pwd: str) -> str:
 def login_user(username: str, password: str) -> dict | None:
     conn = get_conn()
     c = conn.cursor()
-    # ইমেইল বা ইউজারনেম কেস-সেন্সিটিভ ইস্যু এড়াতে LOWER ব্যবহার করা হলো
     c.execute(
         "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND password_hash=?",
         (username.strip(), hash_pwd(password)),
@@ -229,16 +251,13 @@ def delete_transaction(tid: int):
 
 # ── Dashboard helpers ──────────────────────────────────────────
 def calculate_summary(rows: list[dict]) -> dict:
-    """পুরনো ডেটার সাথে নতুন লজিকের ম্যাচিং (amount = আয়, payment = খরচ)"""
     total_income = sum(r["amount"] or 0 for r in rows)
     total_payment = sum(r["payment"] or 0 for r in rows)
     net_profit = total_income - total_payment
     
-    # বকেয়া/বাকির হিসাব: মোট বিল থেকে কাস্টমার যা পে করেছে তা বিয়োগ
     unpaid = 0
     for r in rows:
         bill = r["amount"] or 0
-        # পুরনো ট্রানজেকশনে received_amount থাকতে পারে, না থাকলে পেইড স্ট্যাটাস দেখে ফুল ক্যাশ ধরা হবে
         rec = r["received_amount"] if r["received_amount"] is not None else (bill if r["status"] == "R" else 0)
         if bill > rec:
             unpaid += (bill - rec)
