@@ -79,9 +79,10 @@ def hash_pwd(pwd: str) -> str:
 def login_user(username: str, password: str) -> dict | None:
     conn = get_conn()
     c = conn.cursor()
+    # ইমেইল বা ইউজারনেম কেস-সেন্সিটিভ ইস্যু এড়াতে LOWER ব্যবহার করা হলো
     c.execute(
-        "SELECT * FROM users WHERE username=? AND password_hash=?",
-        (username, hash_pwd(password)),
+        "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND password_hash=?",
+        (username.strip(), hash_pwd(password)),
     )
     row = c.fetchone()
     conn.close()
@@ -93,7 +94,7 @@ def register_user(username: str, password: str, shop_name: str, owner_name: str)
     try:
         c.execute(
             "INSERT INTO users (username, password_hash, shop_name, owner_name) VALUES (?,?,?,?)",
-            (username, hash_pwd(password), shop_name, owner_name),
+            (username.strip(), hash_pwd(password), shop_name, owner_name),
         )
         conn.commit()
         return True
@@ -228,22 +229,26 @@ def delete_transaction(tid: int):
 
 # ── Dashboard helpers ──────────────────────────────────────────
 def calculate_summary(rows: list[dict]) -> dict:
-    """নতুন রিকোয়ারমেন্ট অনুযায়ী কাস্টমাইজড লাভ-ক্ষতি ও বিক্রির হিসাব"""
-    total_income = sum(r["amount"] or 0 for r in rows)   # মোট টাকা (আয়)
-    total_payment = sum(r["payment"] or 0 for r in rows) # মোট পেমেন্ট (খরচ)
-    
-    # লাভ = মোট টাকা (আয়) - মোট পেমেন্ট (খরচ)
+    """পুরনো ডেটার সাথে নতুন লজিকের ম্যাচিং (amount = আয়, payment = খরচ)"""
+    total_income = sum(r["amount"] or 0 for r in rows)
+    total_payment = sum(r["payment"] or 0 for r in rows)
     net_profit = total_income - total_payment
     
-    # বাকি হিসাব (স্ট্যাটাস যদি 'P' বা বাকি হয়, অথবা বিল যদি আদায়ের চেয়ে বেশি হয়)
-    unpaid = sum((r["amount"] - r["received_amount"]) for r in rows if r["amount"] > r["received_amount"])
-    
+    # বকেয়া/বাকির হিসাব: মোট বিল থেকে কাস্টমার যা পে করেছে তা বিয়োগ
+    unpaid = 0
+    for r in rows:
+        bill = r["amount"] or 0
+        # পুরনো ট্রানজেকশনে received_amount থাকতে পারে, না থাকলে পেইড স্ট্যাটাস দেখে ফুল ক্যাশ ধরা হবে
+        rec = r["received_amount"] if r["received_amount"] is not None else (bill if r["status"] == "R" else 0)
+        if bill > rec:
+            unpaid += (bill - rec)
+            
     return {
         "total_income": total_income,
         "total_payment": total_payment,
         "net_profit": net_profit,
         "unpaid_amount": unpaid,
-        "count": len(rows), # মোট লেনদেনের সংখ্যা
+        "count": len(rows),
     }
 
 def get_today_summary(user_id: int) -> dict:
@@ -271,17 +276,25 @@ def fmt_dt(d: str) -> str:
     except Exception:
         return d
 
+def set_page(page_name: str):
+    st.session_state.page = page_name
+    st.query_params["p"] = page_name
+
 # ── Auth state ─────────────────────────────────────────────────
 if "user" not in st.session_state:
     st.session_state.user = None
-if "page" not in st.session_state:
+
+url_params = st.query_params
+if "p" in url_params:
+    st.session_state.page = url_params["p"]
+elif "page" not in st.session_state:
     st.session_state.page = "dashboard"
 
 # ═══════════════════════════════════════════════════════════════
 # LOGIN / REGISTER
 # ═══════════════════════════════════════════════════════════════
 def auth_page():
-    st.title("📋 দোকানের হিসাব")
+    st.title("📋  দোকানের হিসাব")
     st.caption("Document Service Shop Accounting")
     tab1, tab2 = st.tabs(["🔑 লগইন", "📝 নতুন অ্যাকাউন্ট"])
     with tab1:
@@ -292,9 +305,10 @@ def auth_page():
             if user:
                 st.session_state.user = user
                 st.success("সফলভাবে লগইন হয়েছে!")
+                set_page("dashboard")
                 st.rerun()
             else:
-                st.error("ভুল ইউজারনেম বা পাসওয়ার্ড")
+                st.error("ভুল ইউজারনেম বা পাসওয়ার্ড! (ইউজারনেম ছোট/বড় হাতের অক্ষর ঠিক আছে কি না চেক করুন)")
     with tab2:
         u2 = st.text_input("ইউজারনেম", key="reg_u")
         p2 = st.text_input("পাসওয়ার্ড", type="password", key="reg_p")
@@ -317,17 +331,15 @@ def dashboard_page():
     monthly = get_monthly_summary(uid, now.year, now.month)
     unpaid_all = get_transactions(uid)
     
-    # Quick actions
     c1, c2 = st.columns(2)
     if c1.button("➕ নতুন লেনদেন", use_container_width=True):
-        st.session_state.page = "add"
+        set_page("add")
         st.rerun()
     if c2.button("📋 সব লেনদেন", use_container_width=True):
-        st.session_state.page = "history"
+        set_page("history")
         st.rerun()
         
     st.divider()
-    # Today's summary
     st.subheader("আজকের সারসংক্ষেপ")
     t1, t2, t3, t4 = st.columns(4)
     t1.metric("মোট টাকা (আয়)", fmt_tk(today["total_income"]))
@@ -337,17 +349,20 @@ def dashboard_page():
         st.metric("বাকি (ক্লিক করুন)", fmt_tk(today["unpaid_amount"]))
         if st.button("আজকের বাকি দেখুন", key="btn_today_unpaid"):
             today_str = date.today().isoformat()
-            today_unpaid = [r for r in unpaid_all if r["transaction_date"] == today_str and r["amount"] > r["received_amount"]]
+            today_unpaid = []
+            for r in unpaid_all:
+                if r["transaction_date"] == today_str:
+                    rec = r["received_amount"] if r["received_amount"] is not None else (r["amount"] if r["status"] == "R" else 0)
+                    if r["amount"] > rec:
+                        today_unpaid.append((r, r["amount"] - rec))
             if today_unpaid:
                 st.write("**আজকের বাকি লেনদেন:**")
-                for r in today_unpaid:
-                    due = r['amount'] - r['received_amount']
+                for r, due in today_unpaid:
                     st.write(f"- {r['customer_name'] or '----'} | {r['service_type_name']} | মোট: {fmt_tk(r['amount'])} | বাকি: {fmt_tk(due)}")
             else:
                 st.info("আজ কোনো বাকি লেনদেন নেই")
                 
     st.divider()
-    # Monthly summary
     st.subheader("চলতি মাসের সারসংক্ষেপ")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("মোট টাকা (আয়)", fmt_tk(monthly["total_income"]))
@@ -356,11 +371,14 @@ def dashboard_page():
     with m4:
         st.metric("বাকি (ক্লিক করুন)", fmt_tk(monthly["unpaid_amount"]))
         if st.button("মাসের বাকি দেখুন", key="btn_month_unpaid"):
-            monthly_unpaid = [r for r in unpaid_all if r["amount"] > r["received_amount"]]
+            monthly_unpaid = []
+            for r in unpaid_all:
+                rec = r["received_amount"] if r["received_amount"] is not None else (r["amount"] if r["status"] == "R" else 0)
+                if r["amount"] > rec:
+                    monthly_unpaid.append((r, r["amount"] - rec))
             if monthly_unpaid:
                 st.write("**চলতি বকেয়া লেনদেনসমূহ:**")
-                for r in monthly_unpaid:
-                    due = r['amount'] - r['received_amount']
+                for r, due in monthly_unpaid:
                     st.write(f"- {fmt_dt(r['transaction_date'])} | {r['customer_name'] or '----'} | বাকি: {fmt_tk(due)} (মোট: {fmt_tk(r['amount'])})")
             else:
                 st.info("কোনো বকেয়া লেনদেন নেই")
@@ -375,8 +393,6 @@ def add_transaction_page():
     with st.form("tx_form"):
         tx_date = st.date_input("তারিখ", value=date.today())
         name = st.text_input("গ্রাহকের নাম (ঐচ্ছিক)")
-        
-        # রেফারেন্স এখন সিলেক্ট বক্স (A, R, P)
         reference = st.selectbox("রেফারেন্স", ["A", "R", "P"])
         
         service_options = [s["name"] for s in services]
@@ -392,7 +408,6 @@ def add_transaction_page():
             payment = st.number_input("পেমেন্ট (খরচ)", min_value=0, value=default_pay)
             
         amount = st.number_input("টাকা (আয়)", min_value=0, value=0)
-        
         status = st.selectbox("স্ট্যাটাস", [("R", "পেইড"), ("P", "বাকি"), ("A", "অগ্রিম")], format_func=lambda x: x[1])
         notes = st.text_area("নোট (ঐচ্ছিক)")
         
@@ -401,10 +416,7 @@ def add_transaction_page():
             if not service_name:
                 st.error("সেবার নাম দিন")
             else:
-                # নাম ফাঁকা থাকলে ---- দিয়ে সেভ হবে
                 final_name = name.strip() if name.strip() else "----"
-                
-                # বাকির হিসাব ঠিক রাখার জন্য লজিক সিঙ্ক করা হলো
                 received_calc = amount if status[0] == "R" else 0
                 if status[0] == "A":
                     received_calc = amount
@@ -425,14 +437,14 @@ def add_transaction_page():
                 st.success("লেনদেন সংরক্ষিত হয়েছে!")
                 st.balloons()
     if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
-        st.session_state.page = "dashboard"
+        set_page("dashboard")
         st.rerun()
 
 # ═══════════════════════════════════════════════════════════════
 # TRANSACTION HISTORY
 # ═══════════════════════════════════════════════════════════════
 def history_page():
-    st.title("📋 লেনদেনের তালিকা")
+    st.title("📋  লেনদেনের তালিকা")
     uid = st.session_state.user["id"]
     services = get_service_types(uid)
     with st.expander("🔍 ফিল্টার", expanded=False):
@@ -474,7 +486,7 @@ def history_page():
                 with st.popover("⚙️ কার্যক্রম"):
                     if st.button("✏️ সম্পাদনা", key=f"edit_{r['id']}"):
                         st.session_state.edit_tx = r
-                        st.session_state.page = "edit"
+                        set_page("edit")
                         st.rerun()
                     if st.button("🗑️ মুছুন", key=f"del_{r['id']}"):
                         delete_transaction(r["id"])
@@ -482,7 +494,7 @@ def history_page():
                         st.rerun()
                         
     if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
-        st.session_state.page = "dashboard"
+        set_page("dashboard")
         st.rerun()
 
 # ── EDIT TRANSACTION ───────────────────────────────────────────
@@ -497,8 +509,6 @@ def edit_page():
     with st.form("edit_form"):
         tx_date = st.date_input("তারিখ", value=datetime.strptime(tx["transaction_date"], "%Y-%m-%d").date())
         name = st.text_input("গ্রাহকের নাম (ঐচ্ছিক)", value=tx["customer_name"] if tx["customer_name"] != "----" else "")
-        
-        # এডিটেও রেফারেন্স সিলেক্ট বক্স
         ref_idx = ["A", "R", "P"].index(tx["reference"]) if tx["reference"] in ["A", "R", "P"] else 0
         reference = st.selectbox("রেফারেন্স", ["A", "R", "P"], index=ref_idx)
         
@@ -514,7 +524,7 @@ def edit_page():
         )
         notes = st.text_area("নোট", value=tx["notes"] or "")
         
-        if st.form_submit_button("💾 হালনাগাদ করুন", use_container_width=True):
+        if st.form_submit_button("💾  হালনাগাদ করুন", use_container_width=True):
             final_name = name.strip() if name.strip() else "----"
             received_calc = amount if status[0] == "R" else 0
             if status[0] == "A":
@@ -532,16 +542,16 @@ def edit_page():
                 "notes": notes,
             })
             st.success("হালনাগাদ হয়েছে!")
-            st.session_state.page = "history"
+            set_page("history")
             st.rerun()
             
     if st.button("❌ বাতিল", use_container_width=True):
-        st.session_state.page = "history"
+        set_page("history")
         st.rerun()
 
 # ── SERVICE TYPES ──────────────────────────────────────────────
 def service_types_page():
-    st.title("🔧 সেবা ধরন")
+    st.title("🔧  সেবা ধরন")
     uid = st.session_state.user["id"]
     services = get_service_types(uid)
     st.subheader("নতুন সেবা ধরন যোগ করুন")
@@ -554,7 +564,7 @@ def service_types_page():
                 st.success("যোগ হয়েছে!")
                 st.rerun()
             else:
-                st.error("নাম edin")
+                st.error("নাম দিন")
                 
     st.subheader("বিদ্যমান সেবা ধরন")
     if not services:
@@ -579,12 +589,12 @@ def service_types_page():
                             st.rerun()
                             
     if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
-        st.session_state.page = "dashboard"
+        set_page("dashboard")
         st.rerun()
 
 # ── REPORTS ───────────────────────────────────────────────────
 def reports_page():
-    st.title("📈 রিপোর্ট ও সারসংক্ষেপ")
+    st.title("📈  রিপোর্ট ও সারসংক্ষেপ")
     uid = st.session_state.user["id"]
     now = datetime.now()
     year = st.selectbox("বছর", list(range(2024, 2028)), index=now.year - 2024)
@@ -649,7 +659,7 @@ def reports_page():
         st.info("কোনো তথ্য নেই")
         
     if st.button("← ড্যাশবোর্ডে ফিরুন", use_container_width=True):
-        st.session_state.page = "dashboard"
+        set_page("dashboard")
         st.rerun()
 
 # ── MAIN NAV ───────────────────────────────────────────────────
@@ -666,17 +676,17 @@ def main():
             "dashboard": "📊 ড্যাশবোর্ড",
             "add": "➕ লেনদেন যোগ",
             "history": "📋 লেনদেন তালিকা",
-            "services": "🔧 সেবা ধরন",
-            "reports": "📈 রিপোর্ট",
+            "services": "🔧  সেবা ধরন",
+            "reports": "📈  রিপোর্ট",
         }
         for key, label in pages.items():
             if st.button(label, use_container_width=True, key=f"nav_{key}"):
-                st.session_state.page = key
+                set_page(key)
                 st.rerun()
         st.divider()
         if st.button("🚪 লগআউট", use_container_width=True):
             st.session_state.user = None
-            st.session_state.page = "dashboard"
+            set_page("dashboard")
             st.rerun()
             
     page = st.session_state.page
